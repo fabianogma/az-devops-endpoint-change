@@ -6,25 +6,34 @@ organization="<nome-da-organização>"
 novo_tenant="<nome-do-novo-tenant>"
 pat="<azure-devops-personal-access-tokens>"
 
+# Check if the file exists
+[ ! -f $file_project ] && {
+    echo "Erro, arquivo $file_project não encontrado"
+    exit 99
+}
+
 # Check if tenants_inalterados.csv exists and is not empty; if not, create it and add headers
 if [ ! -f tenants_inalterados.csv ]; then
     if [ ! -s tenants_inalterados.csv ]; then
-        echo "projects,nome_do_endpoint,endpoint_id,tenant_id,motivo" >> tenants_inalterados.csv
+        echo "dia,hora,projects,nome_do_endpoint,endpoint_id,tenant_id,motivo" >>tenants_inalterados.csv
     fi
 fi
 
 # Check if tenants_alterados.csv exists and is not empty; if not, create it and add headers
 if [ ! -f tenants_alterados.csv ]; then
     if [ ! -s tenants_alterados.csv ]; then
-        echo "projects,nome_do_endpoint,antigo_tenant,tenant_atualizado" >> tenants_alterados.csv
+        echo "dia,hora,projects,nome_do_endpoint,antigo_tenant,tenant_atualizado" >>tenants_alterados.csv
     fi
 fi
 
 # Create the header for authentication
 token=$(echo -n ":$pat" | base64)
 
+# Remove any blank lines from the file
+sed -i '/^$/d' $file_project
+
 # Read each project from the file
-while IFS=";" read -r projects; do
+while read projects || [ -n "$projects" ]; do
     # Fetch the current service endpoints for the project
     json_project=$(curl -s -H "Authorization: Basic $token" -H "Content-Type: application/json" "https://dev.azure.com/$organization/$projects/_apis/serviceendpoint/endpoints?api-version=7.1-preview.4")
 
@@ -32,7 +41,7 @@ while IFS=";" read -r projects; do
     count=$(echo "$json_project" | jq -r '.count')
 
     # Iterate through each service endpoint
-    for ((i=0; i<$count; i++)); do 
+    for ((i=0; i<$count; i++)); do
         endpoint=$(echo "$json_project" | jq -r ".value[$i].id")
 
         uri="https://dev.azure.com/$organization/$projects/_apis/serviceendpoint/endpoints/$endpoint?api-version=7.1-preview.4"
@@ -48,15 +57,15 @@ while IFS=";" read -r projects; do
         if [ "$manual_valid" == "Automatic" ] || [ "$antigo_tenant" == "$novo_tenant" ]; then
             if [ "$manual_valid" == "Automatic" ]; then
                 echo -e "O endpoint $nome_endpoint foi criado de forma automatica, não é possivel atualizar o tenant id.\n"
-                echo "$projects,$nome_endpoint,$endpoint,$antigo_tenant,endpoint automatico" >> tenants_inalterados.csv
+                echo "$(date -I),$(date +%T),$projects,$nome_endpoint,$endpoint,$antigo_tenant,endpoint automatico" >> tenants_inalterados.csv
             else
                 echo -e "O endpoint $nome_endpoint já está no novo tenant, não há necessidade de atualizar o tenant id.\n"
-                echo "$projects,$nome_endpoint,$endpoint,$antigo_tenant,endpoint ja atualizado" >> tenants_inalterados.csv
+                echo "$(date -I),$(date +%T),$projects,$nome_endpoint,$endpoint,$antigo_tenant,endpoint ja atualizado" >> tenants_inalterados.csv
             fi
         else
             # Update the tenantid in the fetched JSON
             update_tenantid=$(echo "$json_project2" | jq --arg novo_tenant "$novo_tenant" '.authorization.parameters.tenantid = $novo_tenant')
-            
+
             # Send the updated JSON back via PUT request
             curl -X PUT "$uri" -H "Authorization: Basic $token" -H "Content-Type: application/json" -d "$update_tenantid" >/dev/null 2>&1
 
@@ -67,11 +76,11 @@ while IFS=";" read -r projects; do
             # Check if the tenant ID was updated successfully
             if [ "$antigo_tenant" == "$tenant_atualizado" ]; then
                 echo -e "Tenant não foi alterado para:\nProjeto: $projects\nEndpoint Name: $nome_endpoint\nEndpoint ID: $endpoint\n"
-                echo "$projects,$nome_endpoint,$endpoint,$tenant_atualizado,erro na atualizao do tenant" >> tenants_inalterados.csv
+                echo "$(date -I),$(date +%T),$projects,$nome_endpoint,$endpoint,$tenant_atualizado,erro na atualizao do tenant" >> tenants_inalterados.csv
             else
-                echo -e "Tenant alterado com sucesso para o projeto $projects e endpoint $nome_endpoint\n" 
-                echo "$projects,$nome_endpoint,$antigo_tenant,$tenant_atualizado" >> tenants_alterados.csv
+                echo -e "Tenant alterado com sucesso para o projeto $projects e endpoint $nome_endpoint\n"
+                echo "$(date -I),$(date +%T),$projects,$nome_endpoint,$antigo_tenant,$tenant_atualizado" >> tenants_alterados.csv
             fi
         fi
-    done
-done < $file_project
+    done    
+done <$file_project
